@@ -35,6 +35,7 @@ const importRsaPublicKey = async (pem: string) => {
     .replace("-----BEGIN PUBLIC KEY-----", "")
     .replace("-----END PUBLIC KEY-----", "")
     .replace(/\s+/g, "");
+
   const binary = atob(normalized);
   const bytes = new Uint8Array(binary.length);
 
@@ -42,13 +43,16 @@ const importRsaPublicKey = async (pem: string) => {
     bytes[i] = binary.charCodeAt(i);
   }
 
-  return window.crypto.subtle.importKey(
+  const key = await window.crypto.subtle.importKey(
     "spki",
     bytes.buffer,
     { name: "RSA-OAEP", hash: "SHA-256" },
     false,
     ["encrypt"]
   );
+
+  console.log("Public key loaded");
+  return key;
 };
 
 function App() {
@@ -94,15 +98,20 @@ function App() {
       client_id: oauthClientId,
       client_secret: oauthClientSecret,
     });
+
     tokenRef.current = tokenResponse.data.access_token;
 
-    setStatus("Fetching public key...");
+    console.log(
+      "Access token received:",
+      tokenRef.current?.slice(0, 20) + "..."
+    );
+
     const publicKeyResponse = await axios.get(`${apiBaseUrl}/public-key`, {
       responseType: "text",
     });
+
     publicKeyRef.current = await importRsaPublicKey(publicKeyResponse.data);
 
-    setStatus("Loading students...");
     await fetchStudents();
     setStatus("Ready");
   };
@@ -124,6 +133,9 @@ function App() {
     window.crypto.getRandomValues(aesKey);
     window.crypto.getRandomValues(iv);
 
+    console.log("AES key (hex):", bytesToHex(aesKey).slice(0, 32) + "...");
+    console.log("IV (hex):", bytesToHex(iv));
+
     const keyWordArray = wordArrayFromBytes(aesKey);
     const ivWordArray = wordArrayFromBytes(iv);
     const plaintext = JSON.stringify(payload);
@@ -140,6 +152,11 @@ function App() {
       aesKey
     );
 
+    console.log(
+      "Encrypted data (preview):",
+      encryptedData.slice(0, 40) + "..."
+    );
+
     return {
       encryptedKey: base64FromBytes(new Uint8Array(encryptedKeyBuffer)),
       encryptedData,
@@ -153,10 +170,15 @@ function App() {
 
     try {
       const encryptedPayload = await encryptPayload(formData);
+
       if (editId) {
+        console.log("Sending encrypted UPDATE request");
         await api.put(`/students/${editId}`, encryptedPayload);
+        console.log("Student updated successfully");
       } else {
+        console.log("Sending encrypted CREATE request");
         await api.post("/students", encryptedPayload);
+        console.log("Student created successfully");
       }
 
       setFormData({ name: "", studentId: "", grade: "" });
@@ -175,7 +197,9 @@ function App() {
   const handleDelete = async (id: string) => {
     setError(null);
     try {
+      console.log("Sending protected DELETE request");
       await api.delete(`/students/${id}`);
+      console.log("Student deleted successfully");
       await fetchStudents();
     } catch (err: any) {
       setError(err?.message || "Failed to delete student");
@@ -185,8 +209,6 @@ function App() {
   return (
     <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 text-gray-800">
       <div className="max-w-7xl mx-auto px-6 py-12">
-
-        {/* Header */}
         <div className="mb-10">
           <h1 className="text-4xl font-bold tracking-tight bg-linear-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
             Student Management Dashboard
@@ -194,7 +216,6 @@ function App() {
           <p className="text-sm text-gray-500 mt-2">{status}</p>
         </div>
 
-        {/* Error */}
         {error && (
           <div className="mb-6 rounded-xl bg-red-50 border border-red-200 text-red-600 px-5 py-3 text-sm shadow-sm">
             {error}
@@ -203,7 +224,6 @@ function App() {
 
         <div className="grid lg:grid-cols-3 gap-8">
 
-          {/* Form Card */}
           <div className="bg-white/80 backdrop-blur shadow-lg border border-gray-100 rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-6">
               {editId ? "Update Student" : "Create Student"}
@@ -229,31 +249,15 @@ function App() {
                 </div>
               ))}
 
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="submit"
-                  className="flex-1 bg-indigo-600 text-white font-medium py-2.5 rounded-lg hover:bg-indigo-700 shadow-md hover:shadow-lg transition"
-                >
-                  {editId ? "Update" : "Create"}
-                </button>
-
-                {editId && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditId(null);
-                      setFormData({ name: "", studentId: "", grade: "" });
-                    }}
-                    className="flex-1 bg-gray-200 text-gray-700 font-medium py-2.5 rounded-lg hover:bg-gray-300 transition"
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
+              <button
+                type="submit"
+                className="w-full bg-indigo-600 text-white font-medium py-2.5 rounded-lg hover:bg-indigo-700 shadow-md transition"
+              >
+                {editId ? "Update" : "Create"}
+              </button>
             </form>
           </div>
 
-          {/* Table Card */}
           <div className="lg:col-span-2 bg-white/80 backdrop-blur shadow-lg border border-gray-100 rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-6">Students</h2>
 
@@ -268,45 +272,27 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {students.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="text-center py-8 text-gray-400"
-                      >
-                        No students found.
+                  {students.map((student) => (
+                    <tr key={student._id} className="border-b">
+                      <td className="py-4">{student.name}</td>
+                      <td className="py-4">{student.studentId}</td>
+                      <td className="py-4">{student.grade}</td>
+                      <td className="py-4 text-right space-x-2">
+                        <button
+                          onClick={() => handleEdit(student)}
+                          className="px-3 py-1 text-xs bg-blue-100 text-blue-600 rounded"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDelete(student._id)}
+                          className="px-3 py-1 text-xs bg-red-100 text-red-600 rounded"
+                        >
+                          Delete
+                        </button>
                       </td>
                     </tr>
-                  ) : (
-                    students.map((student) => (
-                      <tr
-                        key={student._id}
-                        className="border-b last:border-none hover:bg-gray-50 transition"
-                      >
-                        <td className="py-4">{student.name}</td>
-                        <td className="py-4">{student.studentId}</td>
-                        <td className="py-4">
-                          <span className="px-3 py-1 text-xs rounded-full bg-indigo-100 text-indigo-600 font-semibold">
-                            {student.grade}
-                          </span>
-                        </td>
-                        <td className="py-4 text-right space-x-2">
-                          <button
-                            onClick={() => handleEdit(student)}
-                            className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-100 text-blue-600 hover:bg-blue-200 transition"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDelete(student._id)}
-                            className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-100 text-red-600 hover:bg-red-200 transition"
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
