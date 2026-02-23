@@ -1,27 +1,6 @@
 import axios, { type AxiosInstance } from "axios";
 import CryptoJS from "crypto-js";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import "./App.css";
-
-/* ===========================
-   DEBUG LOGGER
-=========================== */
-
-const DEBUG = true;
-
-const log = (...args: any[]) => {
-  if (DEBUG) {
-    console.log("[DEBUG]", ...args);
-  }
-};
-
-const logError = (...args: any[]) => {
-  console.error("[ERROR]", ...args);
-};
-
-/* ===========================
-   TYPES
-=========================== */
 
 type Student = {
   _id: string;
@@ -30,18 +9,10 @@ type Student = {
   grade: string;
 };
 
-/* ===========================
-   ENV CONFIG
-=========================== */
-
 const apiBaseUrl =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 const oauthClientId = import.meta.env.VITE_CLIENT_ID || "";
 const oauthClientSecret = import.meta.env.VITE_CLIENT_SECRET || "";
-
-/* ===========================
-   HELPER FUNCTIONS
-=========================== */
 
 const bytesToHex = (bytes: Uint8Array) =>
   Array.from(bytes)
@@ -60,37 +31,25 @@ const base64FromBytes = (bytes: Uint8Array) => {
 };
 
 const importRsaPublicKey = async (pem: string) => {
-  log("Importing RSA Public Key...");
-
   const normalized = pem
     .replace("-----BEGIN PUBLIC KEY-----", "")
     .replace("-----END PUBLIC KEY-----", "")
     .replace(/\s+/g, "");
-
-  log("Normalized PEM:", normalized);
-
   const binary = atob(normalized);
   const bytes = new Uint8Array(binary.length);
 
-  for (let i = 0; i < binary.length; i += 1) {
+  for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
 
-  const key = await window.crypto.subtle.importKey(
+  return window.crypto.subtle.importKey(
     "spki",
     bytes.buffer,
     { name: "RSA-OAEP", hash: "SHA-256" },
     false,
     ["encrypt"]
   );
-
-  log("RSA Public Key Imported Successfully:", key);
-  return key;
 };
-
-/* ===========================
-   COMPONENT
-=========================== */
 
 function App() {
   const [students, setStudents] = useState<Student[]>([]);
@@ -106,116 +65,68 @@ function App() {
   const tokenRef = useRef<string | null>(null);
   const publicKeyRef = useRef<CryptoKey | null>(null);
 
-  /* ===========================
-     AXIOS INSTANCE
-  =========================== */
-
   const api: AxiosInstance = useMemo(() => {
     const instance = axios.create({ baseURL: apiBaseUrl });
-
     instance.interceptors.request.use((config) => {
       if (tokenRef.current) {
         config.headers.Authorization = `Bearer ${tokenRef.current}`;
       }
-      log("Outgoing Request:", config.method?.toUpperCase(), config.url);
       return config;
     });
-
     return instance;
   }, []);
 
-  /* ===========================
-     FETCH STUDENTS
-  =========================== */
-
   const fetchStudents = async () => {
-    try {
-      log("Fetching students...");
-      const response = await api.get<Student[]>("/students");
-      log("Students response:", response.data);
-      setStudents(response.data);
-    } catch (err) {
-      logError("Error fetching students:", err);
-    }
+    const response = await api.get<Student[]>("/students");
+    setStudents(response.data);
   };
-
-  /* ===========================
-     INITIALIZE
-  =========================== */
 
   const initialize = async () => {
     setError(null);
     setStatus("Requesting access token...");
-    log("Initializing application...");
-    log("API Base URL:", apiBaseUrl);
 
     if (!oauthClientId || !oauthClientSecret) {
-      logError("Missing OAuth credentials");
-      setStatus("Missing OAuth client credentials in frontend env");
+      setStatus("Missing OAuth credentials");
       return;
     }
 
-    log("Requesting OAuth token...");
     const tokenResponse = await axios.post(`${apiBaseUrl}/token`, {
       client_id: oauthClientId,
       client_secret: oauthClientSecret,
     });
-
     tokenRef.current = tokenResponse.data.access_token;
-    log("Access Token received:", tokenRef.current);
 
     setStatus("Fetching public key...");
-
-    log("Requesting public key...");
     const publicKeyResponse = await axios.get(`${apiBaseUrl}/public-key`, {
       responseType: "text",
     });
-
-    publicKeyRef.current = await importRsaPublicKey(
-      publicKeyResponse.data
-    );
+    publicKeyRef.current = await importRsaPublicKey(publicKeyResponse.data);
 
     setStatus("Loading students...");
     await fetchStudents();
-
     setStatus("Ready");
-    log("Initialization complete ✅");
   };
 
   useEffect(() => {
-    initialize().catch((initError) => {
-      logError("Initialization failed:", initError);
-      setError(initError?.message || "Initialization failed");
+    initialize().catch((err) => {
+      setError(err?.message || "Initialization failed");
       setStatus("Initialization failed");
     });
   }, []);
 
-  /* ===========================
-     ENCRYPT PAYLOAD
-  =========================== */
-
   const encryptPayload = async (payload: object) => {
-    log("Encrypting payload:", payload);
-
     if (!publicKeyRef.current) {
-      logError("Public key not loaded");
       throw new Error("Public key not loaded");
     }
 
     const aesKey = new Uint8Array(32);
     const iv = new Uint8Array(16);
-
     window.crypto.getRandomValues(aesKey);
     window.crypto.getRandomValues(iv);
 
-    log("Generated AES Key:", aesKey);
-    log("Generated IV:", iv);
-
     const keyWordArray = wordArrayFromBytes(aesKey);
     const ivWordArray = wordArrayFromBytes(iv);
-
     const plaintext = JSON.stringify(payload);
-    log("Plaintext JSON:", plaintext);
 
     const encryptedData = CryptoJS.AES.encrypt(plaintext, keyWordArray, {
       iv: ivWordArray,
@@ -223,215 +134,186 @@ function App() {
       padding: CryptoJS.pad.Pkcs7,
     }).ciphertext.toString(CryptoJS.enc.Base64);
 
-    log("AES Encrypted Data:", encryptedData);
-
     const encryptedKeyBuffer = await window.crypto.subtle.encrypt(
       { name: "RSA-OAEP" },
       publicKeyRef.current,
       aesKey
     );
 
-    const encryptedKey = base64FromBytes(
-      new Uint8Array(encryptedKeyBuffer)
-    );
-
-    log("RSA Encrypted AES Key:", encryptedKey);
-    log("IV Base64:", base64FromBytes(iv));
-
     return {
-      encryptedKey,
+      encryptedKey: base64FromBytes(new Uint8Array(encryptedKeyBuffer)),
       encryptedData,
       iv: base64FromBytes(iv),
     };
   };
 
-  /* ===========================
-     HANDLE SUBMIT
-  =========================== */
-
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
 
-    log("Form submitted");
-    log("Form Data:", formData);
-    log("Edit ID:", editId);
-
     try {
       const encryptedPayload = await encryptPayload(formData);
-      log("Encrypted Payload:", encryptedPayload);
-
       if (editId) {
-        log("Sending PUT request...");
         await api.put(`/students/${editId}`, encryptedPayload);
       } else {
-        log("Sending POST request...");
         await api.post("/students", encryptedPayload);
       }
-
-      log("Student saved successfully ✅");
 
       setFormData({ name: "", studentId: "", grade: "" });
       setEditId(null);
       await fetchStudents();
-    } catch (submitError: any) {
-      logError("Submit Error:", submitError);
-      setError(submitError?.message || "Failed to save student");
+    } catch (err: any) {
+      setError(err?.message || "Failed to save student");
     }
   };
 
-  /* ===========================
-     EDIT
-  =========================== */
-
   const handleEdit = (student: Student) => {
-    log("Editing student:", student);
-    setFormData({
-      name: student.name,
-      studentId: student.studentId,
-      grade: student.grade,
-    });
+    setFormData(student);
     setEditId(student._id);
   };
 
-  /* ===========================
-     DELETE
-  =========================== */
-
   const handleDelete = async (id: string) => {
     setError(null);
-    log("Deleting student ID:", id);
-
     try {
       await api.delete(`/students/${id}`);
-      log("Student deleted successfully ✅");
       await fetchStudents();
-    } catch (deleteError: any) {
-      logError("Delete Error:", deleteError);
-      setError(deleteError?.message || "Failed to delete student");
+    } catch (err: any) {
+      setError(err?.message || "Failed to delete student");
     }
   };
 
-  /* ===========================
-     UI
-  =========================== */
-
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>Student Data Table</h1>
-        <p>{status}</p>
-      </header>
+    <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 text-gray-800">
+      <div className="max-w-7xl mx-auto px-6 py-12">
 
-      {error ? <div className="error">{error}</div> : null}
-
-      <section className="card">
-        <h2>{editId ? "Update Student" : "Create Student"}</h2>
-
-        <form onSubmit={handleSubmit} className="form">
-          <label>
-            Name
-            <input
-              value={formData.name}
-              onChange={(event) =>
-                setFormData({ ...formData, name: event.target.value })
-              }
-              required
-            />
-          </label>
-
-          <label>
-            Student ID
-            <input
-              value={formData.studentId}
-              onChange={(event) =>
-                setFormData({ ...formData, studentId: event.target.value })
-              }
-              required
-            />
-          </label>
-
-          <label>
-            Grade
-            <input
-              value={formData.grade}
-              onChange={(event) =>
-                setFormData({ ...formData, grade: event.target.value })
-              }
-              required
-            />
-          </label>
-
-          <div className="form-actions">
-            <button type="submit">
-              {editId ? "Update" : "Create"}
-            </button>
-
-            {editId ? (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => {
-                  log("Cancel edit");
-                  setEditId(null);
-                  setFormData({ name: "", studentId: "", grade: "" });
-                }}
-              >
-                Cancel
-              </button>
-            ) : null}
-          </div>
-        </form>
-      </section>
-
-      <section className="card">
-        <h2>Students</h2>
-
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Student ID</th>
-                <th>Grade</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {students.length === 0 ? (
-                <tr>
-                  <td colSpan={4}>No students found.</td>
-                </tr>
-              ) : (
-                students.map((student) => (
-                  <tr key={student._id}>
-                    <td>{student.name}</td>
-                    <td>{student.studentId}</td>
-                    <td>{student.grade}</td>
-                    <td className="actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => handleEdit(student)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => handleDelete(student._id)}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+        {/* Header */}
+        <div className="mb-10">
+          <h1 className="text-4xl font-bold tracking-tight bg-linear-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+            Student Management Dashboard
+          </h1>
+          <p className="text-sm text-gray-500 mt-2">{status}</p>
         </div>
-      </section>
+
+        {/* Error */}
+        {error && (
+          <div className="mb-6 rounded-xl bg-red-50 border border-red-200 text-red-600 px-5 py-3 text-sm shadow-sm">
+            {error}
+          </div>
+        )}
+
+        <div className="grid lg:grid-cols-3 gap-8">
+
+          {/* Form Card */}
+          <div className="bg-white/80 backdrop-blur shadow-lg border border-gray-100 rounded-2xl p-6">
+            <h2 className="text-lg font-semibold mb-6">
+              {editId ? "Update Student" : "Create Student"}
+            </h2>
+
+            <form onSubmit={handleSubmit} className="space-y-5">
+              {["name", "studentId", "grade"].map((field) => (
+                <div key={field}>
+                  <label className="block text-sm text-gray-600 mb-1 capitalize">
+                    {field}
+                  </label>
+                  <input
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
+                    value={(formData as any)[field]}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        [field]: e.target.value,
+                      })
+                    }
+                    required
+                  />
+                </div>
+              ))}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 bg-indigo-600 text-white font-medium py-2.5 rounded-lg hover:bg-indigo-700 shadow-md hover:shadow-lg transition"
+                >
+                  {editId ? "Update" : "Create"}
+                </button>
+
+                {editId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditId(null);
+                      setFormData({ name: "", studentId: "", grade: "" });
+                    }}
+                    className="flex-1 bg-gray-200 text-gray-700 font-medium py-2.5 rounded-lg hover:bg-gray-300 transition"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+
+          {/* Table Card */}
+          <div className="lg:col-span-2 bg-white/80 backdrop-blur shadow-lg border border-gray-100 rounded-2xl p-6">
+            <h2 className="text-lg font-semibold mb-6">Students</h2>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="pb-3 font-medium">Name</th>
+                    <th className="pb-3 font-medium">Student ID</th>
+                    <th className="pb-3 font-medium">Grade</th>
+                    <th className="pb-3 font-medium text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {students.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="text-center py-8 text-gray-400"
+                      >
+                        No students found.
+                      </td>
+                    </tr>
+                  ) : (
+                    students.map((student) => (
+                      <tr
+                        key={student._id}
+                        className="border-b last:border-none hover:bg-gray-50 transition"
+                      >
+                        <td className="py-4">{student.name}</td>
+                        <td className="py-4">{student.studentId}</td>
+                        <td className="py-4">
+                          <span className="px-3 py-1 text-xs rounded-full bg-indigo-100 text-indigo-600 font-semibold">
+                            {student.grade}
+                          </span>
+                        </td>
+                        <td className="py-4 text-right space-x-2">
+                          <button
+                            onClick={() => handleEdit(student)}
+                            className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-100 text-blue-600 hover:bg-blue-200 transition"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDelete(student._id)}
+                            className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-100 text-red-600 hover:bg-red-200 transition"
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </div>
     </div>
   );
 }
